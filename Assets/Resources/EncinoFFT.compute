@@ -1,0 +1,101 @@
+﻿#pragma kernel EncinoFFT SIZE=256 PASSES=8 CHANNEL=x TX=256 TY=1 FINAL=0
+#pragma kernel EncinoFFT SIZE=256 PASSES=8 CHANNEL=y TX=1 TY=256 FINAL=1
+#pragma kernel EncinoFFT SIZE=512 PASSES=9 CHANNEL=x TX=512 TY=1 FINAL=0
+#pragma kernel EncinoFFT SIZE=512 PASSES=9 CHANNEL=y TX=1 TY=512 FINAL=1
+#pragma kernel EncinoFFT SIZE=1024 PASSES=10 CHANNEL=x TX=1024 TY=1 FINAL=0
+#pragma kernel EncinoFFT SIZE=1024 PASSES=10 CHANNEL=y TX=1 TY=1024 FINAL=1
+
+Texture2D<float2> input;
+Texture2D<float2> inputButterfly;
+#if !FINAL
+RWTexture2D<float2> output;
+#else
+RWTexture2D<float> output;
+#endif
+
+groupshared float2 intermediates[SIZE];
+groupshared float2 scratch[SIZE];
+
+void ButterflyPass(float2 butterfly, uint coord, uint passIndex)
+{
+	uint indexA, indexB;
+
+	uint offset = 1 << passIndex;
+	if ((coord / offset) % 2 == 1)
+	{
+		indexA = coord - offset;
+		indexB = coord;
+	}
+	else
+	{
+		indexA = coord;
+		indexB = coord + offset;
+	}
+
+	if (passIndex == 0)
+	{
+		indexA = reversebits(indexA) >> (32 - PASSES);
+		indexB = reversebits(indexB) >> (32 - PASSES);
+	}
+
+	const bool pingpong = (passIndex % 2) == 0;
+
+	float2 valueA, valueB;
+	if (pingpong)
+	{
+		valueA = intermediates[indexA];
+		valueB = intermediates[indexB];
+	}
+	else
+	{
+		valueA = scratch[indexA];
+		valueB = scratch[indexB];
+	}
+
+	float2 weight = butterfly.xy;
+	float2 weightedValueB = weight * valueB.r + weight.gr * valueB.g * float2(-1,1);
+	float2 result = valueA + weightedValueB;
+
+	if (pingpong)
+	{
+		scratch[coord] = result;
+	}
+	else
+	{
+		intermediates[coord] = result;
+	}
+}
+
+float2 conj(float2 v)
+{
+	return float2(v.x, -v.y);
+}
+
+[numthreads(TX,TY,1)]
+void EncinoFFT(uint2 id : SV_DispatchThreadID)
+{
+	uint coord = id.CHANNEL;
+#if !FINAL
+	intermediates[coord] = conj(input[id]);
+#else
+	intermediates[coord] = input[id];
+#endif
+
+	[unroll(PASSES)]
+	for (uint passIndex = 0; passIndex < PASSES; ++passIndex)
+	{
+		GroupMemoryBarrierWithGroupSync();
+		ButterflyPass(inputButterfly[uint2(coord, passIndex)], coord, passIndex);
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	const bool pingpong = (PASSES % 2) == 0;
+	const float2 result = pingpong ? intermediates[coord] : scratch[coord];
+#if !FINAL
+	output[id] = result;
+#else
+	const float sign = ((id.x + id.y) % 2) == 1 ? -1.0f : 1.0f;
+	output[id] = sign * result.x;
+#endif
+}

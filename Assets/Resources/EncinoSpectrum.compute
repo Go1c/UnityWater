@@ -1,0 +1,165 @@
+﻿#define INV2PI	0.15915494309f
+#define INVPI2	0.63661977236f
+#define HPI		1.57079632679f
+#define PI		3.14159265358f
+#define PI2		6.28318530717f
+#define HSQRT2	0.70710678118f
+#define _G		9.81f
+
+#pragma kernel EncinoSpectrumInit
+#pragma kernel EncinoSpectrumUpdate
+
+RWTexture2D<float4> outputH0;
+uint N;
+float L;
+float windVelocity;
+float2 windDir_normal;
+
+// 以下随机数的相关内容可以参看
+// http://www.reedbeta.com/blog/quick-and-easy-gpu-random-numbers-in-d3d11/
+uint rngState;
+
+
+uint WangHash(uint seed)
+{
+	seed = (seed ^ 61) ^ (seed >> 16);
+	seed *= 9;
+	seed = seed ^ (seed >> 4);
+	seed *= 0x27d4eb2d;
+	seed = seed ^ (seed >> 15);
+	return seed;
+}
+
+uint Rand()
+{
+	// Xorshift algorithm from George Marsaglia's paper
+	rngState ^= (rngState << 13);
+	rngState ^= (rngState >> 17);
+	rngState ^= (rngState << 5);
+	return rngState;
+}
+
+float RandFloat()
+{
+	return Rand() / 4294967296.0f;
+}
+
+float RandGauss()
+{
+	float u1 = RandFloat();
+	float u2 = RandFloat();
+	if (u1 < 1e-6f)
+		u1 = 1e-6f;
+	return sqrt(-2.0f * log(u1)) * cos(PI2 * u2);
+}
+
+float GeneralizedABSpectrum(float A, float B, float w)
+{
+	float w4 = w * w;
+	w4 *= w4;
+	float w5 = w4 * w;
+	return A / w5 * exp(-B / w4);
+}
+
+float PositiveCosSquaredDirectionSpreading(float theta)
+{
+	if (theta > -HPI && theta < HPI)
+	{
+		return INVPI2 * cos(theta) * cos(theta);
+	}
+	return 0;
+}
+
+[numthreads(8,8,1)]
+void EncinoSpectrumInit(uint2 id : SV_DispatchThreadID)
+{
+	int2 center = N.xx / 2;
+	int2 coord = id - center;
+	if (coord.x == 0 && coord.y == 0)
+	{
+		outputH0[id] = float4(0, 0, 0, 0);
+		return;
+	}
+
+	// Find wave vector and number
+	float2 k = PI2 * coord / L;
+	float klength = length(k);
+
+	// Init seed
+	rngState = WangHash(id.y * N + id.x);
+
+	float w = sqrt(_G * klength);
+	float dwdk = _G / (2.0f * w);
+
+	// Get Non-Directional Wave Spectra
+	float A = 0.01f * _G * _G;
+	float B = _G / windVelocity;
+	//B *= B;
+	//B *= B;
+	//B *= 0.6858f;
+	float SnonD = GeneralizedABSpectrum(A, B, w) * dwdk / klength;
+
+	// Get Direction Spreading Function
+	float thetaPos = atan2(-k.y, k.x);
+	float thetaNeg = atan2(k.y, -k.x);
+	float DPos = PositiveCosSquaredDirectionSpreading(thetaPos);
+	float DNeg = PositiveCosSquaredDirectionSpreading(thetaNeg);
+	
+	// Get Amplitude
+	float dk = PI2 / L;
+	float SPos = SnonD * DPos;
+	float SNeg = SnonD * DNeg;
+	float APos = RandGauss() * sqrt(abs(SPos) * dk * dk * 2);
+	float ANeg = RandGauss() * sqrt(abs(SNeg) * dk * dk * 2);
+
+	// Random Phase
+	float PPos = RandFloat() * PI2;
+	float PNeg = RandFloat() * PI2;
+
+	outputH0[id] = float4(
+		APos * float2(cos(PPos), - sin(PPos)),
+		ANeg * float2(cos(PNeg), - sin(PNeg)) 
+	);
+}
+
+float time;
+
+Texture2D<float4> inputH0;
+RWTexture2D<float2> outputH;
+RWTexture2D<float2> outputDx;
+RWTexture2D<float2> outputDy;
+
+float2 cmul(float2 lhs, float2 rhs)
+{
+	return float2(
+		lhs.x * rhs.x - lhs.y * rhs.y,
+		lhs.x * rhs.y + lhs.y * rhs.x
+	);
+}
+
+
+[numthreads(8,8,1)]
+void EncinoSpectrumUpdate(uint2 id : SV_DispatchThreadID)
+{
+	int2 center = N.xx / 2;
+	int2 coord = id - center;
+
+	float2 k = PI2 * coord / L;
+	float klength = length(k);
+
+	float w = sqrt(abs(_G * k));
+
+	// Advance time
+	float sw; float cw;
+	sincos(w * time, sw, cw);
+
+	float2 fwd = float2(cw, -sw);
+	float2 bkwd = float2(cw, sw);
+
+	float4 h0 = inputH0[id];
+	float2 h = cmul(h0.xy, fwd) + cmul(h0.zw, bkwd);
+
+	outputH[id] = h;
+	outputDx[id] = float2(-h.y * k.x, h.x * k.x) / (klength + 0.00001f);
+	outputDy[id] = float2(-h.y * k.y, h.x * k.y) / (klength + 0.00001f);
+}
