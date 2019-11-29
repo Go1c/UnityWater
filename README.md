@@ -24,11 +24,14 @@
 ##### 1.4  Scene:Water_CarToon_NoDepthAlpha
 ![CarToonWater4](Doc/CarToonWater4.gif)
 
-### 2.基于屏幕后处理水面效果（待整理）
+### 2.基于屏幕后处理水面效果
 ##### 2.1  Scene:Water_PostProcessing
+##### 原作者： https://github.com/SardineFish/Post-processing-Demo
 ![Water_PostProcessing)](Doc/2.gif)
-### 3.基于Mesh可交互水面（待整理）
----
+### 3.基于Mesh可交互水面
+##### 原作者：https://github.com/AsehesL/UnityWaveEquation
+![CarToonWater4](https://github.com/AsehesL/UnityWaveEquation/raw/master/Doc/preview.gif)
+---- 
 
 #### 参考链接
 - https://arm-software.github.io/opengl-es-sdk-for-android/ocean_f_f_t.html?tdsourcetag=s_pcqq_aiomsg
